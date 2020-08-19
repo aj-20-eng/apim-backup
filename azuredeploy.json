@@ -1,0 +1,141 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "apim_name": {
+            "type": "string"
+        },
+        "backup_storage_account_name": {
+            "type": "string"
+        },
+        "location": {
+            "type": "string",
+            "defaultValue": "[resourceGroup().location]"
+        }
+    },
+    "variables": {
+        "apim_id": "[resourceId('Microsoft.ApiManagement/service', parameters('apim_name'))]",
+        "apim_backup_container_name": "apim-backup",
+        "apim_backup_container_id": "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', parameters('backup_storage_account_name'), 'default', variables('apim_backup_container_name'))]",
+        "apim_backup_logic_app_name": "[concat(parameters('apim_name'), '-backup')]",
+        "apim_backup_logic_app_id": "[resourceId('Microsoft.Logic/workflows', variables('apim_backup_logic_app_name'))]",
+        "apim_backup_operator_role_id": "e022efe7-f5ba-4159-bbe4-b44f577e9b61"
+    },
+    "resources": [
+        {
+            "apiVersion": "2018-07-01",
+            "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+            "name": "[concat(parameters('backup_storage_account_name'), '/default/', variables('apim_backup_container_name'))]",
+            "tags": {
+                "displayName": "APIM Backup Container"
+            }
+        },
+        {
+            "name": "[variables('apim_backup_logic_app_name')]",
+            "type": "Microsoft.Logic/workflows",
+            "apiVersion": "2016-06-01",
+            "location": "[parameters('location')]",
+            "tags": {
+                "displayName": "APIM Backup Logic App"
+            },
+            "properties": {
+                "definition": {
+                    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+                    "contentVersion": "1.0.0.0",
+                    "parameters": {
+                        "apim_backup_container_name": {
+                            "type": "String"
+                        },
+                        "apim_id": {
+                            "type": "String"
+                        },
+                        "backup_storage_account_access_key": {
+                            "type": "SecureString"
+                        },
+                        "backup_storage_account_name": {
+                            "type": "String"
+                        }
+                    },
+                    "triggers": {
+                        "Recurrence": {
+                            "recurrence": {
+                                "frequency": "Day",
+                                "interval": 1,
+                                "schedule": {
+                                    "hours": [
+                                        "1"
+                                    ],
+                                    "minutes": [
+                                        0
+                                    ]
+                                },
+                                "timeZone": "W. Europe Standard Time"
+                            },
+                            "type": "Recurrence"
+                        }
+                    },
+                    "actions": {
+                        "Perform_API_Management_Backup": {
+                            "runAfter": {
+                            },
+                            "type": "Http",
+                            "inputs": {
+                                "authentication": {
+                                    "audience": "https://management.azure.com/",
+                                    "type": "ManagedServiceIdentity"
+                                },
+                                "body": {
+                                    "accessKey": "@{parameters('backup_storage_account_access_key')}",
+                                    "backupName": "@{concat('apim-', string(utcNow('yyyyMMdd')))}",
+                                    "containerName": "@{parameters('apim_backup_container_name')}",
+                                    "storageAccount": "@{parameters('backup_storage_account_name')}"
+                                },
+                                "method": "POST",
+                                "uri": "https://management.azure.com@{parameters('apim_id')}/backup?api-version=2014-02-14"
+                            }
+                        }
+                    },
+                    "outputs": {
+                    }
+                },
+                "parameters": {
+                    "apim_backup_container_name": {
+                        "value": "[variables('apim_backup_container_name')]"
+                    },
+                    "apim_id": {
+                        "value": "[variables('apim_id')]"
+                    },
+                    "backup_storage_account_access_key": {
+                        "value": "[listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('backup_storage_account_name')), '2018-07-01').keys[0].value]"
+                    },
+                    "backup_storage_account_name": {
+                        "value": "[parameters('backup_storage_account_name')]"
+                    }
+                }
+            },
+            "identity": {
+                "type": "SystemAssigned"
+            },
+            "dependsOn": [
+                "[variables('apim_backup_container_id')]"
+            ]
+        },
+        {
+            "apiVersion": "2018-09-01-preview",
+            "type": "Microsoft.ApiManagement/service/providers/roleAssignments",
+            "name": "[concat(parameters('apim_name'), '/Microsoft.Authorization/', guid(uniqueString(variables('apim_backup_logic_app_name'))))]",
+            "dependsOn": [
+                "[variables('apim_backup_logic_app_id')]"
+            ],
+            "properties": {
+                "roleDefinitionId": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Authorization/roleDefinitions/', variables('apim_backup_operator_role_id'))]",
+                "principalId": "[reference(variables('apim_backup_logic_app_id'), '2016-06-01', 'Full').identity.principalId]",
+                "principalType": "ServicePrincipal"
+            },
+            "tags": {
+                "displayName": "APIM Backup RBAC"
+            }
+        }
+    ],
+    "outputs": { }
+}
